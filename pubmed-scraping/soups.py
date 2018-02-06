@@ -21,6 +21,9 @@ You should have received a copy of the GNU General Public License
 from bs4 import BeautifulSoup
 import numpy as np
 
+#TODO: add class-specific SoupStrainers to only parse the necessary parts of 
+#      the XML file 
+
 class NCBISoupABC(type): 
     """
     Abstract base class for Soup objects, which parse XML requested from 
@@ -65,8 +68,7 @@ class NCBISoupABC(type):
             returns 
             
             {'lastname': [b'Doe', b'Smith'], 
-                     'forename': [b'John', b'Jane'] 
-                     }
+             'forename': [b'John', b'Jane'] }
         """
         def single_generator(self): 
             for article in self: 
@@ -161,6 +163,8 @@ class SummarySoup(BeautifulSoup, metaclass=NCBISoupABC, **summary_kwargs):
 #        multiple sections labeled by attributes like "summary" and "materials 
 #        and methods" such that there is occasionally more than one 
 #        'abstracttext' tag per article summary 
+#        this inconsistency makes it impossible to use the boilerplate 
+#        nested_generator or single_generator of the metaclass
         for article in self: 
             ab = [ab for ab in article('abstracttext').string] 
             yield ' '.join(ab).encode('utf-8')
