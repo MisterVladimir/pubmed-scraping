@@ -16,10 +16,13 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-#along with this program.  If not, see <http://www.gnu.org/licenses/>.
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 import numpy as np
+import h5py
+
+from query import UIDQuery
 
 #TODO: add class-specific SoupStrainers to only parse the necessary parts of 
 #      the XML file 
@@ -73,26 +76,31 @@ class NCBISoupABC(type):
         def single_generator(self): 
             for article in self: 
                 try: 
-                    li = article.find_all(tag_name) 
-                    for element in li: 
-                        yield element.string.encode('utf-8') 
-                except AttributeError: 
+                    li = article.find_all(**tag_name)
+                    if not li == []: 
+                        yield ' '.join([element.string for element in 
+                                        li]).encode('utf-8')
+                    else: 
+                        yield ''.encode('utf-8')
+                except AttributeError: # if article is of type NavigableString
                     pass 
         
         def nested_generator(self): 
             for article in self: 
                 name = tag_name[0] 
-                keys = tag_name[1]
-                yield {key: [c.string.encode('utf-8') for contents in  \
-                             article(name) for c in contents(key)] for \
-                             key in keys}
+                keys = tag_name[1] 
+                if isinstance(article, Tag): 
+                    yield {key: [c.string.encode('utf-8') for contents in  \
+                                 article(name) for c in contents(key)] for \
+                                 key in keys} 
+                    
 
 #                tag = article.find_all(tag_name[0])   
 #                yield [{k: [t.string.encode('utf-8') for t in item.find_all(k)]\
 #                            for k in rest if not (item.__getattr__(k) is None)} 
 #                        for item in tag if isinstance(item, Tag)]
                         
-        if isinstance(tag_name, (str, bytes)): 
+        if isinstance(tag_name, (str, bytes, dict)): 
             generator = single_generator 
         elif np.iterable(tag_name): 
             generator = nested_generator
@@ -101,11 +109,13 @@ class NCBISoupABC(type):
         
         return property(generator)
     
-    def __new__(metacls, name, bases, namespace, **kwds):
+    def __new__(metacls, name, bases, namespace, **kwds): 
+        namespace['_data_attrs'] = []
         for k, v in kwds.items(): 
             namespace[k] = NCBISoupABC.add_generator_property(v)
-        result = type.__new__(metacls, name, bases, namespace)
-        return result
+            namespace['_data_attrs'].append(k) 
+            
+        return type.__new__(metacls, name, bases, namespace)
 
     def __subclasscheck__(cls, subclass):
 #        https://stackoverflow.com/questions/40764347/python-subclasscheck-subclasshook
@@ -116,21 +126,46 @@ class NCBISoupABC(type):
             return False
         return True
 
-uid_kwargs = {'uid': 'id'}
+uid_kwargs = {'_uid': ('idlist', ('id',))}
 class UIDSoup(BeautifulSoup, metaclass=NCBISoupABC, **uid_kwargs): 
     """
     Parses Pubmed IDs from XML resulting from a keyword search 
     (https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?)
     """
+    def __init__(self, markup='', features='lxml', builder=None, parse_only=None, 
+                       from_encoding=None, excude_encodings=None, **kwargs): 
+        super().__init__(markup, features, builder, parse_only, from_encoding, 
+                         excude_encodings, **kwargs)
+        
     def __iter__(self): 
         for i in self.body: 
             yield i 
+    
+    @property
+    def uid(self): 
+        uid = list(self._uid)[0]['id'].copy()
+        for i in uid: 
+            yield i
+    
+    def save(self, folder): 
+        with h5py.File(folder + '\\uids.h5', 'w') as f: 
+            data = [i for i in self.uid]
+            f.create_dataset(name='uid', data=data)
+#            keep similar h5 save format as UIDQuery
+            fields = UIDQuery.fields.copy() 
+            del fields[UIDQuery.query_key]
+            for k, v in fields.items(): 
+                f.attrs[k] = v.encode('utf-8')
 
-summary_kwargs = {'title':'articletitle', 
+summary_kwargs = {'abstract': {'name': 'abstracttext'}, 
+                  'uid': {'idtype':'pubmed'}, 
+                  'doi': {'idtype':'doi'}, 
+                  'pmc': {'idtype':'pmc'}, 
+                  'title':{'name': 'articletitle'}, 
                   'authors': ('author', ('lastname', 'forename', 'affiliation')), 
                   'date': ('pubdate', ('year', 'month', 'day')), 
-                  'journal': ('journal', ('title',)), 
-                  'grant': ('grant', ('grantid',))
+                  'journal': {'name':'isoabbreviation'}, 
+                  'grant': ('grant', ('grantid', 'agency'))
                   }
 class SummarySoup(BeautifulSoup, metaclass=NCBISoupABC, **summary_kwargs): 
     """
@@ -138,45 +173,37 @@ class SummarySoup(BeautifulSoup, metaclass=NCBISoupABC, **summary_kwargs):
     title, authors, etc. We probably get this XML using 
     https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi? 
     """
+    def __init__(self, markup='', features='lxml', builder=None, parse_only=None, 
+                       from_encoding=None, excude_encodings=None, **kwargs): 
+        super().__init__(markup, features, builder, parse_only, from_encoding, 
+                         excude_encodings, **kwargs)
+
+
     def __iter__(self): 
         for summary in self.body.pubmedarticleset('pubmedarticle'): 
-            yield summary
-    
-#    it's this kind of copying that we (mostly) avoid by using the metaclass
-#    in the case of pmids and doi, it's unavoidable -- as far as I can figure out 
-    @property
-    def uid(self): 
-        for article in self: 
-            yield article.articleidlist.find(idtype="pubmed").string.encode('utf-8') 
-    @property
-    def doi(self): 
-        for article in self: 
-            yield article.articleidlist.find(idtype="doi").string.encode('utf-8') 
-    @property
-    def pmc(self): 
-        for article in self: 
-            yield article.articleidlist.find(idtype="pmc").string.encode('utf-8') 
-    
-    @property 
-    def abstract(self): 
-#        the tricky thing about extracting abstracts is that some come in 
-#        multiple sections labeled by attributes like "summary" and "materials 
-#        and methods" such that there is occasionally more than one 
-#        'abstracttext' tag per article summary 
-#        this inconsistency makes it impossible to use the boilerplate 
-#        nested_generator or single_generator of the metaclass
-        for article in self: 
-            ab = [ab for ab in article('abstracttext').string] 
-            yield ' '.join(ab).encode('utf-8')
-    
-    def reset_iterator(self): 
-        pass 
+            if isinstance(summary, Tag): 
+                yield summary
+                
+    def save(self, folder): 
+        with h5py.File(folder + '\\pubmed_summary.h5', 'w') as f: 
+            for i, info in enumerate(zip(*[self.__getattribute__(attr) for 
+                                          attr in self._data_attrs])): 
+                grp = f.create_group(name=str(i)) 
+                for name, data in zip(self._data_attrs, info): 
+                    if isinstance(data, dict) and len(data) > 1: 
+                        subgrp = grp.create_group(name)
+                        for k, v in data.items(): 
+                            subgrp.create_dataset(k, data=v)
+                    elif isinstance(data, dict): 
+                        grp.create_dataset(name=name, data=data[data.keys()[0]])
+                    else: 
+                        grp.create_dataset(name=name, data=data)
 
-class ProteinSoup(metaclass=NCBISoupABC): 
+class ProteinSoup(BeautifulSoup, metaclass=NCBISoupABC): 
 #    TODO: 
     pass 
 
-class GeneSoup(metaclass=NCBISoupABC): 
+class GeneSoup(BeautifulSoup, metaclass=NCBISoupABC): 
 #    TODO: 
     pass 
 
@@ -184,6 +211,8 @@ class SimpleUIDList(metaclass=NCBISoupABC):
     """
     Fake UIDSoup. 
     """
+    _data_attrs = ['uid']
+    
     def __init__(self, uids): 
         self.uid = iter(uids)
         
@@ -194,4 +223,6 @@ class SimpleUIDList(metaclass=NCBISoupABC):
     
     @uid.setter
     def uid(self, val): 
-        self._uid = val
+        self._uid = val 
+
+

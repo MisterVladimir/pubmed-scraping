@@ -120,7 +120,13 @@ class KeyWordQuery(Query):
     soup_sources = None
     
     class _SearchTerms(dict): 
-        kw_conversion = {'':'', ' ':'', 'title':'ti', 'journal':'journal', 
+        """
+        arg : list 
+        [keyword for advanced search, seach words]
+        """
+        
+        kw_conversion = {'':'', None:'', ' ':'', 'title':'ti', 'author':'au', 
+                         'journal':'journal', 
                          'affiliation':'affiliation'} 
         def __init__(self, arg): 
             arg = {li[0]: li[1:] for li in arg if \
@@ -131,12 +137,14 @@ class KeyWordQuery(Query):
 #            TODO: boolean logic in search 
             url = ''
             for k, v in self.items(): 
-                url += '+'.join([self[v]+'[{0}]'.format(self.kw_conversion[k])])
+                url += '+'.join([term + '[{0}]'.format(self.kw_conversion[k]) for term in v])
             return url
         
         @property
         def saveable_format(self): 
-            li = [k + ',' + ','.join(v) for k, v in self.items()]
+            li = [k + ',' + ','.join(v) if not k in (None, '') else 
+                  ' ,' + ','.join(v) for k, v in self.items()]
+            
             return '\n'.join(li).encode('utf-8')
     
     def _save_h5(self, path): 
@@ -189,8 +197,8 @@ class UIDQuery(Query):
             except AttributeError: 
                 pass 
             terms = filter(lambda x: x.isdigit(), 
-                           map(lambda x: str(x).replace(' ', ''), 
-                               np.concatenate(terms)))
+                           map(lambda x: x.decode('utf-8').replace(' ', ''), 
+                               terms))
 
             super().__init__(terms)
         
