@@ -20,6 +20,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
 import unittest
+from requests import get
 
 from py3_modules.pubmed_scraping.pubmed_scraping import query
 
@@ -28,7 +29,9 @@ from py3_modules.pubmed_scraping.pubmed_scraping import query
 
 class KeyWordQueryTest(unittest.TestCase): 
     def setUp(self):
-        self.test_load_list = [['','shteyn']]
+        self.test_load_list = [[b'author',b'shteyn'], 
+                               [b' ',b'autophagy'], 
+                               [b'mindate', b'2016']]
         self.query = query.KeyWordQuery() 
         self.query.load(terms=self.test_load_list)
 
@@ -37,15 +40,16 @@ class KeyWordQueryTest(unittest.TestCase):
 
     def test_kw_terms(self): 
         saveable = self.query.search_terms.saveable_format
-        self.assertEqual(saveable, ' ,shteyn'.encode('utf-8'))
+        print('KWD saveable: {0}'.format(saveable))
+        self.assertEqual(saveable, 'author,shteyn\n ,autophagy\nmindate,2016\nmaxdate,2100'.encode('utf-8'))
         url = self.query.search_terms.to_url() 
         self.assertIsInstance(url, str)
     
     def test_make_whole_url(self): 
         url, method = self.query.to_url() 
+        print('KWD url is {0}'.format(url))
         self.assertIsInstance(url, str) 
         self.assertIs(method, get) 
-
 
 class UIDQueryTest(unittest.TestCase):
     def setUp(self):
@@ -58,14 +62,14 @@ class UIDQueryTest(unittest.TestCase):
 
     def test_uid_terms(self): 
         saveable = self.query.search_terms.saveable_format
-        print('saveable: {0}'.format(saveable))
+        print('UID saveable: {0}'.format(saveable))
         self.assertEqual(saveable, '28852740,29350911'.encode('utf-8'))
         url = self.query.search_terms.to_url() 
         self.assertIsInstance(url, str)
     
     def test_make_whole_url(self): 
         url, method = self.query.to_url() 
-        print('url is {0}'.format(url))
+        print('UID url is {0}'.format(url))
         self.assertIsInstance(url, str) 
         
 if __name__ == '__main__': 

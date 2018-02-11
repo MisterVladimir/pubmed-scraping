@@ -18,7 +18,7 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, Tag, SoupStrainer
 import numpy as np
 import h5py
 
@@ -173,16 +173,18 @@ class SummarySoup(BeautifulSoup, metaclass=NCBISoupABC, **summary_kwargs):
     title, authors, etc. We probably get this XML using 
     https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi? 
     """
-    def __init__(self, markup='', features='lxml', builder=None, parse_only=None, 
+    strainer = SoupStrainer('pubmedarticle')
+    def __init__(self, markup='', features='lxml', builder=None, parse_only=strainer, 
                        from_encoding=None, excude_encodings=None, **kwargs): 
         super().__init__(markup, features, builder, parse_only, from_encoding, 
                          excude_encodings, **kwargs)
 
 
     def __iter__(self): 
-        for summary in self.body.pubmedarticleset('pubmedarticle'): 
-            if isinstance(summary, Tag): 
-                yield summary
+        for summary in self.children: 
+            if isinstance(summary, Tag) and summary.medlinecitation.attrs['status'] == 'MEDLINE': 
+                yield summary 
+        
                 
     def save(self, folder): 
         with h5py.File(folder + '\\pubmed_summary.h5', 'w') as f: 

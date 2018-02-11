@@ -25,13 +25,14 @@ from abc import ABC, abstractmethod
 import pickle
 import h5py
 
+RETMAX = '500'
+
 class Query(ABC): 
     """
     """
     query_key = None
     base_url = None
     fields = None
-    soup_sources = None
     
     class _SearchTerms(object): 
         def __init__(self, arg): 
@@ -49,10 +50,8 @@ class Query(ABC):
         raise NotImplementedError('Not implemented.')  
     
     def _to_url(self, base): 
-        query = self.fields
-        query[self.query_key] = self.search_terms.to_url()
-        
-        url = base + '&'.join(['{0}={1}'.format(k, v) for k, v in query.items()])
+        url = base + self.search_terms.to_url() + '&' \
+              + '&'.join(['{0}={1}'.format(k, v) for k, v in self.fields.items()])
         return url
     
     @abstractmethod
@@ -68,8 +67,9 @@ class Query(ABC):
         Parameters
         ------------
         has_uids : SimpleUIDList
-            Anything that has a 'uid' attribute. This is parsed into a list 
-            of integers. 
+            Anything that has a 'uid' attribute that, upon calling its next 
+            method, generates a utf-8-encoded bytes object. 
+            
         
         path: str
             Path to file. 
@@ -86,11 +86,11 @@ class Query(ABC):
                 read = None 
                 with open(path, 'rb') as f: 
                     if extension == 'txt': 
-                        read = f.read().decode('utf-8')
+                        read = f.read()
                     elif extension in ('pickle', 'pkl'): 
-                        read = pickle.load(f, encoding='utf-8')
+                        read = pickle.load(f, encoding='bytes')
                         
-                result = [line.split(',') for line in read.split('\n')] 
+                result = [line.split(b',') for line in read.split(b'\n')] 
             
             self.search_terms = self._SearchTerms(result) 
     
@@ -111,46 +111,80 @@ class Query(ABC):
                                     ', '.join(self.extensions)) 
                                                                            )
     
+    def to_request(self): 
+        fields = self.fields.copy() 
+        fields.update(self.search_terms.to_dict())
+        return lambda: self.req_function(self.base_url, fields)
+    
 
 class KeyWordQuery(Query): 
-    query_key = 'term'
     base_url = r"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?"
     fields = OrderedDict([('db', 'pubmed'), 
-                          (query_key, '')]) 
-    soup_sources = None
-    
+                          ('retmax', RETMAX)]) 
+
     class _SearchTerms(dict): 
         """
         arg : list 
         [keyword for advanced search, seach words]
         """
-        
+        query_key = 'term'
         kw_conversion = {'':'', None:'', ' ':'', 'title':'ti', 'author':'au', 
-                         'journal':'journal', 
-                         'affiliation':'affiliation'} 
+                         'journal':'journal', 'affiliation':'affiliation', 
+                         'language': 'language'} 
         def __init__(self, arg): 
-            arg = {li[0]: li[1:] for li in arg if \
-                                            li[0] in self.kw_conversion.keys()}
-            super().__init__(arg)
-        
-        def to_url(self): 
+#            Everything in SearchTerms is string not bytes. Conversion from bytes 
+#            is done in __init__. 
+            arg = {li[0].decode('utf-8'): [i.decode('utf-8') for i in li[1:]] 
+                   for li in arg if li[0].decode('utf-8') 
+                   in ('mindate', 'maxdate', *self.kw_conversion.keys())}
+            
+            super().__init__(arg) 
+            self.baseurl = '&datetype=pdat'
+            if 'mindate' in self.keys(): 
+                self.mindate = self['mindate'][0]
+                del self['mindate'] 
+            else: 
+                self.mindate = '1800'
+            
+            if 'mindate' in self.keys(): 
+                self.mindate = self['maxdate'][0]
+                del self['maxdate'] 
+            else: 
+                self.maxdate = '2100'
+            self.baseurl += '&mindate={0}&maxdate={1}'.format(self.mindate, 
+                                                              self.maxdate)
+            
+        @property
+        def term(self): 
 #            TODO: boolean logic in search 
             url = ''
             for k, v in self.items(): 
-                url += '+'.join([term + '[{0}]'.format(self.kw_conversion[k]) for term in v])
+                url += ''.join(['{0}[{1}]'.format(term, self.kw_conversion[k]) for term in v])
             return url
         
+        def to_url(self): 
+            return self.query_key + "=" + self.term + self.baseurl
+            
+        
+        def to_dict(self): 
+            return OrderedDict([('term', self.term), 
+                                ('datetype', 'pdat'), 
+                                ('mindate', self.mindate), 
+                                ('maxdate', self.maxdate)])
+    
         @property
         def saveable_format(self): 
             li = [k + ',' + ','.join(v) if not k in (None, '') else 
                   ' ,' + ','.join(v) for k, v in self.items()]
+            li.append('mindate,{0}'.format(self.mindate))
+            li.append('maxdate,{0}'.format(self.maxdate))
             
             return '\n'.join(li).encode('utf-8')
     
     def _save_h5(self, path): 
         with h5py.File(path, mode='w') as f: 
             for k, v in self.fields.items(): 
-                f.attrs[k] = v.encode('utf-8')
+                f.attrs[k] = v.encode('utf-8') 
             for grp, val in f.items(): 
                 f.create_dataset(grp.name, np.array(val, dtype=bytes))
             
@@ -162,8 +196,7 @@ class KeyWordQuery(Query):
                     self.fields[k] = v.decode('utf-8')
             li = []
             for grp, val in f.items(): 
-                li.append([grp.name] + list(map(lambda x: x.decode('utf-8'), 
-                                                val)))
+                li.append([grp.name] + list(val))
         return terms 
     
     def to_url(self): 
@@ -172,25 +205,26 @@ class KeyWordQuery(Query):
         
         return self._to_url(base), req_function
 
+    @property    
+    def req_function(self): 
+        return requests.get
+
 
 class UIDQuery(Query): 
     """
     Holds PubMed IDs, and creates URLs for downloading PubMed Data (e.g. 
     titles, abstracts, etc.) 
     """
-    
-    query_key = 'id'
-    base_url = {'low': r"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?", 
-                'high': r"efetch.fcgi?"} 
+    base_url = r"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?"
     fields = OrderedDict([('db','pubmed'), #default is to search Pubmed
-                          (query_key, ''), 
                           ('rettype', 'abstract'), 
                           ('retmode', 'xml'), 
                           ('version', '2.0'), 
-                          ('retmax', '1000')]) 
+                          ('retmax', RETMAX)]) 
     searchable_db = ['pubmed']
     
     class _SearchTerms(list): 
+        query_key = 'id'
         def __init__(self, terms): 
             try: 
                 terms = terms.uid
@@ -208,21 +242,23 @@ class UIDQuery(Query):
         @property
         def saveable_format(self): 
             return ','.join(self).encode('utf-8')
+        
+        def to_dict(self): 
+            return OrderedDict([(self.query_key, self)])
     
     def _save_h5(self, path): 
         with h5py.File(path, mode='w') as f: 
             fields = self.fields.copy() 
-            del fields[self.query_key]
             for k, v in fields.items(): 
                 f.attrs[k] = v.encode('utf-8')
-            f.create_dataset('uid',data=np.array(self.search_terms, dtype=int)) 
+            f.create_dataset(name='uid',data=self.search_terms.saveable_format) 
             
     def _load_h5(self, path): 
         terms = [] 
         with h5py.File(path, 'r') as f: 
             for k, v in f.attrs.items(): 
                 if k in self.fields.keys(): 
-                    self.fields[k] = v.decode('utf-8')
+                    self.fields[k] = v
             terms = f['uid']
         return terms 
     
@@ -238,7 +274,7 @@ class UIDQuery(Query):
     
     @property
     def ret_max(self): 
-        return self._ret_max
+        return int(self.fields['retmax'])
     @ret_max.setter
     def ret_max(self, val): 
 #        in case this is passed in directly from an XML parser 
@@ -247,12 +283,12 @@ class UIDQuery(Query):
             val = 1e5
         self.fields['retmax'] = str(val)
     
-    def to_url(self): 
-        if len(self.fields['id']) >= 200: 
-            base = self.base_url['high'] 
-            req_function = requests.get
+    @property
+    def req_function(self): 
+        if self.ret_max >= 200: 
+            return requests.get
         else: 
-            base = self.base_url['low'] 
-            req_function = requests.post
-
-        return self._to_url(base), req_function
+            return requests.post
+    
+    def to_url(self): 
+        return self._to_url(self.base_url), self.req_function
