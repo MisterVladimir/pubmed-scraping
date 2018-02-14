@@ -25,7 +25,8 @@ from abc import ABC, abstractmethod
 import pickle
 import h5py
 
-RETMAX = '500'
+SUMMARY_RETMAX = 500
+UID_RETMAX = int(1e5)
 
 class Query(ABC): 
     """
@@ -42,6 +43,10 @@ class Query(ABC):
             parsed. 
             """
             raise NotImplementedError('Implement in a child class.') 
+            
+    def __init__(self, retstart=0, api_key=None): 
+        self.fields['retstart'] = retstart
+        self.api_key = api_key
     
     def _load_h5(self, path): 
         raise NotImplementedError('Not implemented.')  
@@ -49,14 +54,40 @@ class Query(ABC):
     def _save_h5(self, path): 
         raise NotImplementedError('Not implemented.')  
     
-    def _to_url(self, base): 
-        url = base + self.search_terms.to_url() + '&' \
-              + '&'.join(['{0}={1}'.format(k, v) for k, v in self.fields.items()])
-        return url
+    @property
+    def ret_start(self): 
+        return int(self.fields['retstart'])
+    @ret_start.setter
+    def ret_start(self, val): 
+        if isinstance(val, bytes): 
+            self.fields['retstart'] = val.decode('utf-8')
+        else: 
+            self.fields['retstart'] = str(val)
     
+    @property
     @abstractmethod
+    def ret_max(self): 
+        pass
+    @ret_max.setter
+    def ret_max(self, val): 
+        pass
+    
     def to_url(self): 
-        raise NotImplementedError('Implement in a child class.') 
+        url = self.base_url + self.search_terms.to_url() + '&' \
+              + '&'.join(['{0}={1}'.format(k, v) for k, v in self.fields.items()])
+        
+        if not self.api_key is None: 
+            url += '&api_key={0}'.format(self.api_key)
+        
+        return url, self.req_function
+    
+    @property
+    def as_request(self): 
+        fields = self.fields.copy() 
+        fields.update(self.search_terms.to_dict()) 
+        if not self.api_key is None: 
+            fields.update({'api_key': self.api_key})
+        return lambda: self.req_function(self.base_url, fields)
     
     def load(self, terms=None, path=None): 
         """
@@ -108,19 +139,13 @@ class Query(ABC):
 
         else: 
             raise IOError('Incompatible file type; use one of {0}.'.format(
-                                    ', '.join(self.extensions)) 
-                                                                           )
-    
-    def to_request(self): 
-        fields = self.fields.copy() 
-        fields.update(self.search_terms.to_dict())
-        return lambda: self.req_function(self.base_url, fields)
+                                    ', '.join(self.extensions)))
     
 
 class KeyWordQuery(Query): 
     base_url = r"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?"
     fields = OrderedDict([('db', 'pubmed'), 
-                          ('retmax', RETMAX)]) 
+                          ('retmax', str(UID_RETMAX))]) 
 
     class _SearchTerms(dict): 
         """
@@ -146,8 +171,8 @@ class KeyWordQuery(Query):
             else: 
                 self.mindate = '1800'
             
-            if 'mindate' in self.keys(): 
-                self.mindate = self['maxdate'][0]
+            if 'maxdate' in self.keys(): 
+                self.maxdate = self['maxdate'][0]
                 del self['maxdate'] 
             else: 
                 self.maxdate = '2100'
@@ -199,12 +224,17 @@ class KeyWordQuery(Query):
                 li.append([grp.name] + list(val))
         return terms 
     
-    def to_url(self): 
-        base = self.base_url
-        req_function = requests.get
-        
-        return self._to_url(base), req_function
-
+    @property
+    def ret_max(self): 
+        return int(self.fields['retmax'])
+    @ret_max.setter
+    def ret_max(self, val): 
+#        in case this is passed in directly from an XML parser 
+        val = int(val)
+        if val >= int(UID_RETMAX): #NCBI can't retreive more than 1e5 UIDs
+            val = int(UID_RETMAX)
+        self.fields['retmax'] = str(val)
+    
     @property    
     def req_function(self): 
         return requests.get
@@ -220,7 +250,8 @@ class UIDQuery(Query):
                           ('rettype', 'abstract'), 
                           ('retmode', 'xml'), 
                           ('version', '2.0'), 
-                          ('retmax', RETMAX)]) 
+                          ('retmax', str(SUMMARY_RETMAX)), 
+                          ('retstart', '0'), ]) 
     searchable_db = ['pubmed']
     
     class _SearchTerms(list): 
@@ -244,7 +275,7 @@ class UIDQuery(Query):
             return ','.join(self).encode('utf-8')
         
         def to_dict(self): 
-            return OrderedDict([(self.query_key, self)])
+            return OrderedDict([(self.query_key, self.to_url())])
     
     def _save_h5(self, path): 
         with h5py.File(path, mode='w') as f: 
@@ -279,16 +310,13 @@ class UIDQuery(Query):
     def ret_max(self, val): 
 #        in case this is passed in directly from an XML parser 
         val = int(val)
-        if val >= 1e5: #NCBI can't retreive more than 1e5 UIDs
-            val = 1e5
+        if val >= int(SUMMARY_RETMAX): #NCBI can't retreive more than 1e5 UIDs
+            val = int(SUMMARY_RETMAX)
         self.fields['retmax'] = str(val)
     
     @property
     def req_function(self): 
         if self.ret_max >= 200: 
-            return requests.get
-        else: 
             return requests.post
-    
-    def to_url(self): 
-        return self._to_url(self.base_url), self.req_function
+        else: 
+            return requests.get

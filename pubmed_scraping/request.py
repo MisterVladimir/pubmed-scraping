@@ -18,15 +18,24 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
-
 from query import KeyWordQuery, UIDQuery
 from soups import UIDSoup, SummarySoup
 
 def request(search_terms, type_): 
     """
+    Searches Pubmed for 'search_terms' and returns a Soup of the results. 
+    
     Parameters
     -------------
+    search_terms: str or list
+        If str, must be path to file containing search terms that can be loaded 
+        with the 'load' method of UIDQuery or KeyWordQuery. 
+        
+        If list, likewise must be loadable into Query type objects. 
     
+    type_ : str
+        Either 'keyword' or 'uids', describing what type of search terms we are 
+        using, whether they are key words or pubmed IDs.     
     """
     d = {'keyword': (KeyWordQuery, UIDSoup), 
          'uids': (UIDQuery, SummarySoup)} 
@@ -38,22 +47,27 @@ def request(search_terms, type_):
     else: 
         query.load(terms=search_terms) 
     
-    url, req_function = query.to_url()
     raw = None
-    with req_function(url) as req: 
-        raw = req.text
+    with query.as_request() as req: 
+        if not req.status_code == 200: 
+#            return req
+            raise (BaseException(str(req.status_code) + ':' + type_))
+        else: 
+            raw = req.text
     
-    return Soup(raw, 'lxml') 
+    return Soup(raw) 
         
 
 def save(saveable, save_folder): 
     """
     Parameters
     ------------
-    soup : 
-        raw text received by 
+    saveable : 
+        Anything with a 'save' method. 
+    
+    save_folder: str
+        Path to folder in which to save 'saveable'. 
         
-    attrs : 
     """
     try: 
         saveable.save(folder=save_folder) 
@@ -63,8 +77,10 @@ def save(saveable, save_folder):
 
 if __name__ == '__main__': 
 #    kw = input('Enter search terms: ') 
-    terms=[[' ', 'shteyn']]
+    terms=[[b'author', b'rothman'], 
+           [b'language',b'English'], 
+           [b'mindate', b'2000']]
     uid_soup = request(terms, 'keyword')
     summary_soup = request(uid_soup, 'uids')
-    save(uid_soup, r"C:\Users\v\Anaconda3\envs\py3\py3_modules\pubmed_scraping\test\test_data")
-    save(summary_soup, r"C:\Users\v\Anaconda3\envs\py3\py3_modules\pubmed_scraping\test\test_data")
+#    save(uid_soup, r"C:\Users\v\Anaconda3\envs\py3\py3_modules\pubmed_scraping\test\test_data")
+#    save(summary_soup, r"C:\Users\v\Anaconda3\envs\py3\py3_modules\pubmed_scraping\test\test_data")

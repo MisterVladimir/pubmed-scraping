@@ -77,13 +77,10 @@ class NCBISoupABC(type):
             for article in self: 
                 try: 
                     li = article.find_all(**tag_name)
-                    if not li == []: 
-                        yield ' '.join([element.string for element in 
+                    yield ' '.join([element.string for element in 
                                         li]).encode('utf-8')
-                    else: 
-                        yield ''.encode('utf-8')
-                except AttributeError: # if article is of type NavigableString
-                    pass 
+                except (AttributeError, TypeError): 
+                    yield ''.encode('utf-8') 
         
         def nested_generator(self): 
             for article in self: 
@@ -136,6 +133,7 @@ class UIDSoup(BeautifulSoup, metaclass=NCBISoupABC, **uid_kwargs):
                        from_encoding=None, excude_encodings=None, **kwargs): 
         super().__init__(markup, features, builder, parse_only, from_encoding, 
                          excude_encodings, **kwargs)
+        self._data_attrs = ['uid']
         
     def __iter__(self): 
         for i in self.body: 
@@ -143,22 +141,24 @@ class UIDSoup(BeautifulSoup, metaclass=NCBISoupABC, **uid_kwargs):
     
     @property
     def uid(self): 
-        uid = list(self._uid)[0]['id'].copy()
-        for i in uid: 
-            yield i
+#        uid = list(self._uid)[0]['id'].copy()
+        for i in self.idlist.children: 
+            if isinstance(i, Tag): 
+                yield i.string.encode('utf-8')
     
     def save(self, folder): 
         with h5py.File(folder + '\\uids.h5', 'w') as f: 
             data = [i for i in self.uid]
             f.create_dataset(name='uid', data=data)
 #            keep similar h5 save format as UIDQuery
-            fields = UIDQuery.fields.copy() 
-            del fields[UIDQuery.query_key]
-            for k, v in fields.items(): 
-                f.attrs[k] = v.encode('utf-8')
+            f.attrs['search_terms'] = [term.string.encode('utf-8') for term 
+                                       in self.find_all('term')]
 
 summary_kwargs = {'abstract': {'name': 'abstracttext'}, 
-                  'uid': {'idtype':'pubmed'}, 
+                  'uid': {'idtype':'pubmed'}, # uid is mandatory if we want to 
+                                              # save files to h5 because group 
+                                              # (article summaries) are labeled 
+                                              # by their Pubmed IDs
                   'doi': {'idtype':'doi'}, 
                   'pmc': {'idtype':'pmc'}, 
                   'title':{'name': 'articletitle'}, 
@@ -173,24 +173,29 @@ class SummarySoup(BeautifulSoup, metaclass=NCBISoupABC, **summary_kwargs):
     title, authors, etc. We probably get this XML using 
     https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi? 
     """
-    strainer = SoupStrainer('pubmedarticle')
-    def __init__(self, markup='', features='lxml', builder=None, parse_only=strainer, 
-                       from_encoding=None, excude_encodings=None, **kwargs): 
+    def __init__(self, markup='', builder=None, from_encoding=None, 
+                 excude_encodings=None, **kwargs): 
+        parse_only = SoupStrainer('pubmedarticle')
+        features = 'lxml'
         super().__init__(markup, features, builder, parse_only, from_encoding, 
                          excude_encodings, **kwargs)
-
-
+    
     def __iter__(self): 
         for summary in self.children: 
-            if isinstance(summary, Tag) and summary.medlinecitation.attrs['status'] == 'MEDLINE': 
-                yield summary 
+            if isinstance(summary, Tag) \
+               and summary.medlinecitation.attrs['status'] == 'MEDLINE' \
+               and not (summary.abstract is None): 
+                
+               yield summary 
         
                 
     def save(self, folder): 
-        with h5py.File(folder + '\\pubmed_summary.h5', 'w') as f: 
+        # kind of ugly but it works...
+        with h5py.File(folder + '\\pubmed_summary.h5', 'a') as f: 
+            uid = list(self.uid) 
             for i, info in enumerate(zip(*[self.__getattribute__(attr) for 
-                                          attr in self._data_attrs])): 
-                grp = f.create_group(name=str(i)) 
+                                           attr in self._data_attrs])): 
+                grp = f.create_group(name=uid[i].decode('utf-8')) 
                 for name, data in zip(self._data_attrs, info): 
                     if isinstance(data, dict) and len(data) > 1: 
                         subgrp = grp.create_group(name)
